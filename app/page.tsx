@@ -1,113 +1,182 @@
-import Image from 'next/image'
+"use client";
+import { useEffect, useState } from "react";
+import L from "leaflet";
+import "leaflet/dist/leaflet.css";
+import "leaflet.markercluster";
+import "leaflet.markercluster/dist/MarkerCluster.css";
+import "leaflet.markercluster/dist/MarkerCluster.Default.css";
+import axios, { AxiosResponse } from "axios";
+import debounce from "lodash.debounce";
+
+type Flight = [
+  string,
+  string,
+  string,
+  number,
+  number,
+  number,
+  number,
+  number,
+  boolean,
+  number,
+  number,
+  number,
+  number[],
+  number,
+  string,
+  boolean,
+  number,
+  number
+];
+
+type FlightResponse = {
+  time: number;
+  states: Flight[];
+};
 
 export default function Home() {
+  const [map, setMap] = useState<L.Map>();
+  const [markerClusterGroup, setMarkerClusterGroup] =
+    useState<L.MarkerClusterGroup>();
+  const [previousZoom, setPreviousZoom] = useState(0);
+  const [quotaExceeded, setQuotaExceeded] = useState<boolean>(false);
+
+  const debouncedHandleMapMove = debounce(handleMapMove, 1000);
+
+  async function initMap() {
+    if (map) return;
+
+    let myMap = L.map("map").setView([51.505, -0.09], 5);
+
+    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 10,
+      minZoom: 5,
+      attribution:
+        '&copy; <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    }).addTo(myMap as L.Map);
+
+    const markers = L.markerClusterGroup().addTo(myMap);
+
+    setMap(myMap);
+    setMarkerClusterGroup(markers);
+
+    const initialBounds = myMap.getBounds();
+    await fetchAllFlights(initialBounds, markers);
+  }
+
+  async function fetchAllFlights(
+    bounds: L.LatLngBounds,
+    markerGroup: L.MarkerClusterGroup
+  ) {
+    try {
+      let response: AxiosResponse<FlightResponse> = await axios.get(
+        `https://opensky-network.org/api/states/all`,
+        {
+          params: {
+            lamin: bounds.getSouth(),
+            lomin: bounds.getWest(),
+            lamax: bounds.getNorth(),
+            lomax: bounds.getEast(),
+          },
+          auth: {
+            username: process.env.NEXT_PUBLIC_OPENSKY_USERNAME || "",
+            password: process.env.NEXT_PUBLIC_OPENSKY_PASSWORD || "",
+          },
+          headers: {
+            "Access-Control-Allow-Origin": "*",
+          },
+        }
+      );
+      const { states } = response.data;
+      setQuotaExceeded(false);
+
+      if (markerGroup) {
+        markerGroup.clearLayers();
+
+        const newMarkers: L.Marker[] = [];
+
+        states.forEach((flight) => {
+          if (!flight[5] || !flight[6]) return;
+
+          const planeSvg = `
+            <svg height="16px" width="16px" style="transform: rotate(${flight[10]}deg)" version="1.1" id="_x32_" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 512 512" xml:space="preserve">
+              <style type="text/css">
+                .st0{fill:#000000;}
+              </style>
+              <g>
+                <path class="st0" d="M511.06,286.261c-0.387-10.849-7.42-20.615-18.226-25.356l-193.947-74.094   C298.658,78.15,285.367,3.228,256.001,3.228c-29.366,0-42.657,74.922-42.885,183.583L19.167,260.904   C8.345,265.646,1.33,275.412,0.941,286.261L0.008,311.97c-0.142,3.886,1.657,7.623,4.917,10.188   c3.261,2.564,7.597,3.684,11.845,3.049c0,0,151.678-22.359,198.037-29.559c1.85,82.016,4.019,127.626,4.019,127.626l-51.312,24.166   c-6.046,2.38-10.012,8.206-10.012,14.701v9.465c0,4.346,1.781,8.505,4.954,11.493c3.155,2.987,7.403,4.539,11.74,4.292l64.83-3.667   c2.08,14.436,8.884,25.048,16.975,25.048c8.091,0,14.877-10.612,16.975-25.048l64.832,3.667c4.336,0.246,8.584-1.305,11.738-4.292   c3.174-2.988,4.954-7.148,4.954-11.493v-9.465c0-6.495-3.966-12.321-10.012-14.701l-51.329-24.166c0,0,2.186-45.61,4.037-127.626   c46.358,7.2,198.036,29.559,198.036,29.559c4.248,0.635,8.602-0.485,11.845-3.049c3.261-2.565,5.041-6.302,4.918-10.188   L511.06,286.261z"/>
+              </g>
+            </svg>
+          `;
+
+          const markerIcon = L.divIcon({
+            html: planeSvg,
+            className: "marker-icon",
+            iconSize: [16, 16],
+            iconAnchor: [8, 8],
+          });
+
+          const marker = L.marker([flight[6], flight[5]], {
+            icon: markerIcon,
+          });
+
+          const popupContent = `
+          <strong>Flight:</strong> ${flight[0]}<br>
+          <strong>Origin:</strong> ${flight[2]}<br>
+          <strong>Destination:</strong> ${flight[1]}<br>
+          <strong>Altitude:</strong> ${flight[7]} ft<br>
+          <strong>Speed:</strong> ${flight[9]} m/s
+        `;
+
+          marker.bindPopup(popupContent);
+
+          newMarkers.push(marker);
+        });
+
+        markerGroup.addLayers(newMarkers);
+      }
+    } catch (e: any) {
+      if (e.response?.status === 429) {
+        setQuotaExceeded(true);
+      } else {
+        throw e;
+      }
+    }
+  }
+
+  async function handleMapMove() {
+    if (!map) throw Error("Map not initialized");
+
+    const bounds = map.getBounds();
+    const currentZoom = map.getZoom();
+
+    // Check if the zoom level has changed
+    if (currentZoom !== previousZoom) {
+      setPreviousZoom(currentZoom);
+
+      await fetchAllFlights(bounds, markerClusterGroup as L.MarkerClusterGroup);
+    }
+  }
+
+  useEffect(() => {
+    initMap();
+  });
+
+  useEffect(() => {
+    if (!map) return;
+    if (quotaExceeded) return;
+    map.on("moveend", debouncedHandleMapMove);
+  }, [map, quotaExceeded, debouncedHandleMapMove]);
+
   return (
-    <main className="flex min-h-screen flex-col items-center justify-between p-24">
-      <div className="z-10 w-full max-w-5xl items-center justify-between font-mono text-sm lg:flex">
-        <p className="fixed left-0 top-0 flex w-full justify-center border-b border-gray-300 bg-gradient-to-b from-zinc-200 pb-6 pt-8 backdrop-blur-2xl dark:border-neutral-800 dark:bg-zinc-800/30 dark:from-inherit lg:static lg:w-auto  lg:rounded-xl lg:border lg:bg-gray-200 lg:p-4 lg:dark:bg-zinc-800/30">
-          Get started by editing&nbsp;
-          <code className="font-mono font-bold">app/page.tsx</code>
-        </p>
-        <div className="fixed bottom-0 left-0 flex h-48 w-full items-end justify-center bg-gradient-to-t from-white via-white dark:from-black dark:via-black lg:static lg:h-auto lg:w-auto lg:bg-none">
-          <a
-            className="pointer-events-none flex place-items-center gap-2 p-8 lg:pointer-events-auto lg:p-0"
-            href="https://vercel.com?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            By{' '}
-            <Image
-              src="/vercel.svg"
-              alt="Vercel Logo"
-              className="dark:invert"
-              width={100}
-              height={24}
-              priority
-            />
-          </a>
+    <main className="min-h-screen w-full flex flex-col">
+      {quotaExceeded ? (
+        <div className="min-h-screen flex items-center justify-center text-white">
+          <p className="text-xl">You have reached your daily API quota.</p>
         </div>
-      </div>
-
-      <div className="relative flex place-items-center before:absolute before:h-[300px] before:w-[480px] before:-translate-x-1/2 before:rounded-full before:bg-gradient-radial before:from-white before:to-transparent before:blur-2xl before:content-[''] after:absolute after:-z-20 after:h-[180px] after:w-[240px] after:translate-x-1/3 after:bg-gradient-conic after:from-sky-200 after:via-blue-200 after:blur-2xl after:content-[''] before:dark:bg-gradient-to-br before:dark:from-transparent before:dark:to-blue-700 before:dark:opacity-10 after:dark:from-sky-900 after:dark:via-[#0141ff] after:dark:opacity-40 before:lg:h-[360px]">
-        <Image
-          className="relative dark:drop-shadow-[0_0_0.3rem_#ffffff70] dark:invert"
-          src="/next.svg"
-          alt="Next.js Logo"
-          width={180}
-          height={37}
-          priority
-        />
-      </div>
-
-      <div className="mb-32 grid text-center lg:mb-0 lg:grid-cols-4 lg:text-left">
-        <a
-          href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className={`mb-3 text-2xl font-semibold`}>
-            Docs{' '}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className={`m-0 max-w-[30ch] text-sm opacity-50`}>
-            Find in-depth information about Next.js features and API.
-          </p>
-        </a>
-
-        <a
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className={`mb-3 text-2xl font-semibold`}>
-            Learn{' '}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className={`m-0 max-w-[30ch] text-sm opacity-50`}>
-            Learn about Next.js in an interactive course with&nbsp;quizzes!
-          </p>
-        </a>
-
-        <a
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className={`mb-3 text-2xl font-semibold`}>
-            Templates{' '}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className={`m-0 max-w-[30ch] text-sm opacity-50`}>
-            Explore the Next.js 13 playground.
-          </p>
-        </a>
-
-        <a
-          href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className={`mb-3 text-2xl font-semibold`}>
-            Deploy{' '}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className={`m-0 max-w-[30ch] text-sm opacity-50`}>
-            Instantly deploy your Next.js site to a shareable URL with Vercel.
-          </p>
-        </a>
-      </div>
+      ) : (
+        <div className="min-h-screen" id="map"></div>
+      )}
     </main>
-  )
+  );
 }
