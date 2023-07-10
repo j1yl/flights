@@ -7,7 +7,7 @@ const inter = Inter({ subsets: ["latin"] });
 export const metadata: Metadata = {
   title: "Flight Tracker",
   description:
-    "A flight tracker built with Next.js and Tailwind CSS. Data is fetched from the AirLabs API.",
+    "A flight tracker built with Next.js, Tailwind CSS, Leaflet. Data is fetched from the Open-Sky Network API.",
 };
 
 export default function RootLayout({
