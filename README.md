@@ -1,4 +1,4 @@
-# Portfolio
+# Flight Tracker
 
 ## About
 
@@ -16,7 +16,7 @@
 ## Installation
 
 ```
-git clone https://github.com/j1yl/portfolio
+git clone https://github.com/j1yl/flights
 npm install
 npm run dev
 ```
